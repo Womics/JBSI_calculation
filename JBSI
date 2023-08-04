@@ -1,0 +1,45 @@
+import pandas as pd
+names=["lapse [sec]","base line []","start time [sec]","peak []","half width [sec]","area under curve [*sec]","max amplitude [sec]","end time [sec]","slope [/ms]"]
+df1 = pd.read_table("1_1.txt",sep=",",names=names) #put the name of trail 1 here #cell1の内容をl1に代入
+df1.head(20)
+
+import pandas as pd
+names=["lapse [sec]","base line []","start time [sec]","peak []","half width [sec]","area under curve [*sec]","max amplitude [sec]","end time [sec]","slope [/ms]"]
+df2 = pd.read_table("2_1.txt",sep=",",names=names) #put the name of trail 1 here #cell1の内容をl1に代入
+df2.head()
+
+if len(df1)>len(df2):
+    df_large=df1
+    df_small=df2
+else:
+    df_large=df2
+    df_small=df1
+n1 = len(df_large)
+n2 = len(df_small)
+print("spike in cell 1 = ", n1)
+print("spike in cell 2 = ", n2)
+if n1 < 6 or n2 < 6:
+    print("The number of spike is low!")
+#n1>n2
+
+#値の定義
+length = 100 # the window of temporal precision is 0 to length, ms
+tlistZ = [-1 for i in range(length)]
+tlistJBSI = [-1 for i in range(length)]
+tlistoZ = [-1 for i in range(length)]
+tlistoJBSI = [-1 for i in range(length)]
+
+beta = 2
+
+#値の定義
+length = 100 # the window of temporal precision is 0 to length, ms
+tlistZ = [-1 for i in range(length)]
+tlistJBSI = [-1 for i in range(length)]
+tlistoZ = [-1 for i in range(length)]
+tlistoJBSI = [-1 for i in range(length)]
+
+beta = 2
+
+tloca1 = (tlistJBSI.index(max(tlistJBSI))) * 0.001
+print("Z=", tlistZ[tlistJBSI.index(max(tlistJBSI))])
+print("JBSI=", max(tlistJBSI))
