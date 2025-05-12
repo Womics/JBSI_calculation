@@ -1,45 +1,86 @@
 import pandas as pd
-names=["lapse [sec]","base line []","start time [sec]","peak []","half width [sec]","area under curve [*sec]","max amplitude [sec]","end time [sec]","slope [/ms]"]
-df1 = pd.read_table("1_1.txt",sep=",",names=names) #put the name of trail 1 here #cell1の内容をl1に代入
-df1.head(20)
 
+# ── ① 読み込み（タブ区切り）────────────────────────────
+file_path = "DEMO1-3_0001 sparse plot [Butterworth (lowpass 4 50)]-1 event detect.1.txt"
+df = pd.read_csv(file_path, sep="\t", engine="python", skip_blank_lines=True)
+
+# ── ② ROI 番号を前行から補完 ─────────────────────────
+df["ROI (box)"] = df["ROI (box)"].ffill()      # '' → NaN → 前値で埋める
+
+# ── ③ スパイク行だけ抽出（event 列が数値）──────────────
+evt = df[df["event"].notna()]                  # ROI プロパティ行は除外
+
+# ── ④ 細胞ごとに DataFrame 化 ──────────────────────────
+def make_cell_df(evt_df, roi_id, time_col="peak time [s]"):
+    return (evt_df[evt_df["ROI (box)"] == roi_id]
+            [[time_col]]
+            .rename(columns={time_col: "spike_time_s"})
+            .reset_index(drop=True))
+
+cell1_df = make_cell_df(evt, 1)   # ROI = 1
+cell2_df = make_cell_df(evt, 2)   # ROI = 2
+
+print("cell-1 spikes =", len(cell1_df))
+print("cell-2 spikes =", len(cell2_df))
+
+# これで cell1_df, cell2_df が解析コードにそのまま渡せる
+
+import numpy as np
 import pandas as pd
-names=["lapse [sec]","base line []","start time [sec]","peak []","half width [sec]","area under curve [*sec]","max amplitude [sec]","end time [sec]","slope [/ms]"]
-df2 = pd.read_table("2_1.txt",sep=",",names=names) #put the name of trail 1 here #cell1の内容をl1に代入
-df2.head()
+from bisect import bisect_left, bisect_right
 
-if len(df1)>len(df2):
-    df_large=df1
-    df_small=df2
-else:
-    df_large=df2
-    df_small=df1
-n1 = len(df_large)
-n2 = len(df_small)
-print("spike in cell 1 = ", n1)
-print("spike in cell 2 = ", n2)
-if n1 < 6 or n2 < 6:
-    print("The number of spike is low!")
-#n1>n2
+# --- パラメータ設定 ---
+tau_s = 0.001   # 同期窓 ±1 ms
+tau_j = 0.002   # ジッタ窓 ±2 ms (= 2*tau_s)
+beta   = 2      # tau_j / tau_s = 2 なので β=2
 
-#値の定義
-length = 100 # the window of temporal precision is 0 to length, ms
-tlistZ = [-1 for i in range(length)]
-tlistJBSI = [-1 for i in range(length)]
-tlistoZ = [-1 for i in range(length)]
-tlistoJBSI = [-1 for i in range(length)]
+# --- DataFrame から生の時刻配列を取得 ---
+ref_times  = df_small['spike_time_s'].to_numpy()   # 短い方を reference
+targ_times = df_large['spike_time_s'].to_numpy()   # 長い方を target
+n1         = len(ref_times)
 
-beta = 2
+# --- 1. 実観測同期数 NC --------------------------
+NC = 0
+j   = 0
+for t_ref in ref_times:
+    # ターゲット側で t_ref ± tau_s に入るスパイクが 1 本でもあれば OK
+    # 事前に targ_times をソートしておけば二分探索で高速
+    left  = bisect_left (targ_times, t_ref - tau_s, lo=j)
+    right = bisect_right(targ_times, t_ref + tau_s, lo=left)
+    if right > left:
+        NC += 1
+        j = left                 # ポインタを進めて計算量削減
 
-#値の定義
-length = 100 # the window of temporal precision is 0 to length, ms
-tlistZ = [-1 for i in range(length)]
-tlistJBSI = [-1 for i in range(length)]
-tlistoZ = [-1 for i in range(length)]
-tlistoJBSI = [-1 for i in range(length)]
+# --- 2. p_i の計算 ------------------------------
+# まずターゲット側の同期窓を「互いに重ならない区間集合」に変換
+windows = np.column_stack([targ_times - tau_s, targ_times + tau_s])
+windows = windows[windows[:,0].argsort()]           # sort by start
 
-beta = 2
+# 区間マージ
+merged = []
+for start, end in windows:
+    if merged and start <= merged[-1][1]:
+        merged[-1][1] = max(merged[-1][1], end)
+    else:
+        merged.append([start, end])
+merged = np.asarray(merged)
 
-tloca1 = (tlistJBSI.index(max(tlistJBSI))) * 0.001
-print("Z=", tlistZ[tlistJBSI.index(max(tlistJBSI))])
-print("JBSI=", max(tlistJBSI))
+# 各リファレンススパイクについて重なり長を求める
+p = np.zeros(n1)
+for idx, t_ref in enumerate(ref_times):
+    jitter_start = t_ref - tau_j
+    jitter_end   = t_ref + tau_j
+    # 区間 [jitter_start, jitter_end] と merged 各区間の重なり長の和
+    overlap = np.maximum(
+        np.minimum(jitter_end,   merged[:,1]) -
+        np.maximum(jitter_start, merged[:,0]),
+        0.0
+    ).sum()
+    p[idx] = overlap / (2 * tau_j)
+
+mu = p.sum()                       # 期待同期数
+
+# --- 3. JBSI 計算 -------------------------------
+jbsi = beta * (NC - mu) / (n1 - mu)
+
+print(f"NC={NC},  mu={mu:.2f},  JBSI={jbsi:.3f}")
