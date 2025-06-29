@@ -1,0 +1,105 @@
+import pandas as pd
+import numpy as np
+from scipy.optimize import curve_fit
+from scipy import signal
+import matplotlib.pyplot as plt
+
+# データ読み込み
+data = pd.read_csv('file_name', sep='\t', header=0)
+time = data.iloc[:, 0].values
+trace1 = data.iloc[:, 1].values  #  sparse plot 1
+trace2 = data.iloc[:, 2].values  #  sparse plot 2
+
+# バイエクスポネンシャル関数の定義
+def biexp(x, a, b, c, d):
+    return a * np.exp(-b * x) + c * np.exp(-d * x)
+
+# フィッティングと補正を行う関数
+def correct_photobleaching(time, trace):
+    # 初期パラメータ推定
+    p0 = [max(trace)-min(trace), 0.1, min(trace), 0.01]
+    
+    # バイエクスポネンシャルフィット
+    params, _ = curve_fit(biexp, time, trace, p0=p0, maxfev=10000)
+    
+    # フィット曲線
+    fit_curve = biexp(time, *params)
+    
+    # 補正 (raw traceをnormalized fitで割る)
+    corrected = trace / (fit_curve / np.mean(fit_curve))
+    
+    return corrected, fit_curve
+
+# ハイパスフィルタリング
+def highpass_filter(data, sample_rate, cutoff=0.5):
+    nyquist = 0.5 * sample_rate
+    normal_cutoff = cutoff / nyquist
+    b, a = signal.butter(4, normal_cutoff, btype='high', analog=False)
+    filtered = signal.filtfilt(b, a, data)
+    return filtered
+
+# ΔF/F0計算
+def calculate_dff(trace):
+    f0 = np.mean(trace)
+    dff = (trace - f0) / f0 * 100
+    return dff
+
+# サンプリングレート計算 (1秒間に1000サンプル)
+sample_rate = 1 / (time[1] - time[0])
+
+# Trace 1の処理
+corrected1, fit1 = correct_photobleaching(time, trace1)
+filtered1 = highpass_filter(corrected1, sample_rate)
+dff1 = calculate_dff(filtered1)
+
+# Trace 2の処理
+corrected2, fit2 = correct_photobleaching(time, trace2)
+filtered2 = highpass_filter(corrected2, sample_rate)
+dff2 = calculate_dff(filtered2)
+
+# 結果のプロット
+plt.figure(figsize=(15, 10))
+
+# 元データとフィット曲線
+plt.subplot(3, 1, 1)
+plt.plot(time, trace1, label='Raw Trace 1')
+plt.plot(time, fit1, label='Bi-exp Fit 1', linestyle='--')
+plt.plot(time, trace2, label='Raw Trace 2')
+plt.plot(time, fit2, label='Bi-exp Fit 2', linestyle='--')
+plt.title('Raw Traces and Bi-exponential Fits')
+plt.ylabel('Fluorescence')
+plt.legend()
+
+# 補正後データ
+plt.subplot(3, 1, 2)
+plt.plot(time, corrected1, label='Corrected Trace 1')
+plt.plot(time, corrected2, label='Corrected Trace 2')
+plt.title('After Photobleaching Correction')
+plt.ylabel('Corrected Fluorescence')
+plt.legend()
+
+# ΔF/F0
+plt.subplot(3, 1, 3)
+plt.plot(time, dff1, label='ΔF/F0 Trace 1')
+plt.plot(time, dff2, label='ΔF/F0 Trace 2')
+plt.title('ΔF/F0 after High-pass Filtering')
+plt.xlabel('Time (s)')
+plt.ylabel('% ΔF/F0')
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+# 結果をDataFrameに保存
+result_df = pd.DataFrame({
+    'Time (s)': time,
+    'Corrected_Trace1': corrected1,
+    'Corrected_Trace2': corrected2,
+    'Filtered_Trace1': filtered1,
+    'Filtered_Trace2': filtered2,
+    'DFF_Trace1': dff1,
+    'DFF_Trace2': dff2
+})
+
+# CSVに保存
+result_df.to_csv('processed_traces.csv', index=False)
