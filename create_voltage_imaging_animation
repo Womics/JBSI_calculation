@@ -1,0 +1,97 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from scipy.optimize import curve_fit
+from scipy import signal
+
+# --- 光退色補正＆ΔF/F 計算関数 ---
+def biexp(x, a, b, c, d):
+    return a * np.exp(-b * x) + c * np.exp(-d * x)
+
+def correct_photobleaching(time, trace):
+    p0 = [trace[0] - trace[-1], 0.5, trace[-1], 0.01]
+    try:
+        params, _ = curve_fit(biexp, time, trace, p0=p0, maxfev=20000)
+        fit = biexp(time, *params)
+        norm = fit / fit[0] if fit[0] != 0 else np.ones_like(fit)
+    except:
+        norm = np.ones_like(trace)
+    return trace / norm
+
+def calculate_dff(trace):
+    f0 = np.mean(trace)
+    return (trace - f0) / f0 if f0 != 0 else np.zeros_like(trace)
+
+# --- データ読み込み ---
+filepath = 'your_file_path'  # ファイル名を適宜変更
+data = pd.read_csv(filepath, sep='\t', header=0)
+
+time = data.iloc[:, 0].values
+raw1 = data.iloc[:, 1].values  # 2列目データ
+raw2 = data.iloc[:, 2].values  # 3列目データ
+
+# サンプリングレート
+sr = 1.0 / (time[1] - time[0])
+
+# 前処理
+corr1 = correct_photobleaching(time, raw1)
+dff1 = -1*calculate_dff(corr1)
+
+corr2 = correct_photobleaching(time, raw2)
+dff2 = -1*calculate_dff(corr2)
+
+# --- アニメーション設定: 5秒ウィンドウ ---
+window_sec = 10.0
+window_samples = int(window_sec * sr)
+total_samples = len(time)
+
+fig, ax = plt.subplots(figsize=(10, 4))
+ax.set_aspect('auto')   # デフォルトは 'auto'。必要に応じて 'equal' や数値を指定
+line1, = ax.plot([], [], lw=2, color='red', label='pixel 1')
+line2, = ax.plot([], [], lw=2, color='darkcyan', label='pixel 2')
+ax.set_xlim(0, window_sec)
+ymin = min(dff1.min(), dff2.min())
+ymax = 0.3#max(dff1.max(), dff2.max())
+ax.set_ylim(ymin, ymax)
+ax.set_xlabel('Time [s]')
+ax.set_ylabel('-ΔF/F')
+ax.set_title('Purkinje cell Dendrites voltage imaging')
+ax.legend()
+
+def init():
+    line1.set_data([], [])
+    line2.set_data([], [])
+    return (line1, line2)
+
+def update(frame):
+    start = frame
+    end   = start + window_samples
+    x = time[start:end]            # ← 絶対時刻をそのまま使う
+    y1 = dff1[start:end]
+    y2 = dff2[start:end]
+    line1.set_data(x, y1)
+    line2.set_data(x, y2)
+    # ← x軸範囲も更新
+    ax.set_xlim(time[start], time[end-1])
+    return line1, line2
+
+# フレームは100msごとに進める
+step = int(sr * 0.1)
+frames = np.arange(0, total_samples - window_samples, step)
+
+ani = FuncAnimation(fig, update, frames=frames, init_func=init,
+                    blit=True, interval=100)
+
+# GIF に保存（PillowWriter が必要）
+from matplotlib.animation import PillowWriter
+writer = PillowWriter(fps=10)
+ani.save('deltaF_two_channels.gif', writer=writer)
+
+plt.close(fig)
+print("Saved: deltaF_two_channels.gif")
+
+
+# Jupyter でプレビューしたい場合
+from IPython.display import Image, display
+display(Image(filename='deltaF_two_channels.gif'))
