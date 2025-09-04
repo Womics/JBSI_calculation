@@ -1,0 +1,140 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from itertools import combinations
+from pathlib import Path
+
+# ================================
+# ① スパイクデータ読み込み
+# ================================
+def load_event_data(file):
+    df = pd.read_csv(file)
+    if "ROI" in df.columns:
+        roi_col = "ROI"
+    elif "ROI (box)" in df.columns:
+        roi_col = "ROI (box)"
+    else:
+        raise ValueError("ROI列が見つかりません")
+    df[roi_col] = df[roi_col].ffill()
+    return df, roi_col
+
+def make_cell_df(evt_df, roi_id, roi_col="ROI", time_col="time"):
+    return (evt_df[evt_df[roi_col] == roi_id]
+            [[time_col]]
+            .rename(columns={time_col: "spike_time_s"})
+            .reset_index(drop=True))
+
+def compute_cross_correlogram(spike_times_1, spike_times_2,
+                              window_ms=100, bin_width_ms=1):
+    t1_ms = np.array(spike_times_1) * 1000
+    t2_ms = np.array(spike_times_2) * 1000
+    lags = []
+    for t in t1_ms:
+        diff = t2_ms - t
+        mask = np.abs(diff) <= window_ms
+        lags.extend(diff[mask])
+    bins = np.arange(-window_ms, window_ms + bin_width_ms, bin_width_ms)
+    counts, _ = np.histogram(lags, bins=bins)
+    return counts
+
+# ================================
+# ② マスター条件をロード
+# ================================
+# masterファイル（Excel想定、タブ指定）
+master = pd.read_excel("YOUR_FILE_NAME",
+                       sheet_name="each_detected_spikes")
+
+# data_uid = "data001"〜
+# H列: 補正後記録時間 [s]
+# M列: sparseplot
+
+# ================================
+# ③ メインループ
+# ================================
+window_ms    = 500
+bin_width_ms = 3
+bin_edges    = np.arange(-window_ms, window_ms + bin_width_ms, bin_width_ms)
+bin_centers  = bin_edges[:-1] + bin_width_ms/2
+bin_width_s  = bin_width_ms / 1000.0   # bin幅を秒に変換
+
+results = {}  # {(Anesthesia, different, sparseplot): [rate histograms...]}
+
+for num in range(1, 61):
+    file = Path(f"./learner_out_schmitt/timelapse_data{num:03d}_spikes_detected.csv")
+    if not file.exists():
+        print(f"⚠ {file.name} が見つかりません")
+        continue
+
+    evt, roi_col = load_event_data(file)
+    if evt.empty:
+        print(f"⚠ {file.name} は空です")
+        continue
+
+    roi_ids = sorted(evt[roi_col].dropna().unique())
+    if len(roi_ids) < 2:
+        print(f"⚠ {file.name} は ROI が1種類以下のためスキップ")
+        continue
+
+    cell_spike_dict = {roi: make_cell_df(evt, roi, roi_col=roi_col, time_col="time") 
+                       for roi in roi_ids}
+
+    # master条件を取得
+    data_uid = f"data{num:03d}"
+    subset = master[master["data_uid"] == data_uid]
+    if subset.empty:
+        print(f"⚠ {file.name} に対応する行が master に見つかりません")
+        continue
+
+    cond_row = subset.iloc[0]
+    cond_label = (cond_row["Anesthesia"], cond_row["different"], cond_row["sparseplot"])
+    recording_time = cond_row["補正後記録時間"]  # H列
+
+    # 各ROIペアでコレログラム
+    for roi1, roi2 in combinations(roi_ids, 2):
+        spikes1 = cell_spike_dict[roi1]["spike_time_s"]
+        spikes2 = cell_spike_dict[roi2]["spike_time_s"]
+        if spikes1.empty or spikes2.empty:
+            continue
+        counts = compute_cross_correlogram(spikes1, spikes2,
+                                           window_ms=window_ms,
+                                           bin_width_ms=bin_width_ms)
+        # 発火率 (Hz) に換算: counts / (recording_time * bin幅[s])
+        rate = counts / recording_time
+        results.setdefault(cond_label, []).append(rate)
+
+    print(f"✔ {file.name} processed")
+
+# ================================
+# ④ 条件ごとの平均プロット & 保存
+# ================================
+outdir = Path("crosscorr_out_hz")
+outdir.mkdir(exist_ok=True, parents=True)
+
+for cond_label, all_rates in results.items():
+    all_rates_array = np.vstack(all_rates)
+    mean_rate   = np.mean(all_rates_array, axis=0)
+    stderr_rate = np.std(all_rates_array, axis=0, ddof=1) / np.sqrt(all_rates_array.shape[0])
+
+    plt.figure(figsize=(5, 4))
+    plt.plot(bin_centers, mean_rate, label="Mean rate",c="black")
+    plt.fill_between(bin_centers,
+                     mean_rate - stderr_rate,
+                     mean_rate + stderr_rate,
+                     color='gray', alpha=0.3, label="±SEM")
+    plt.xlabel("Time lag (ms)")
+    plt.ylabel("Spike rate (counts/s)")
+    plt.title(f"Cross-Correlogram (Hz): Anes={cond_label[0]}, diff={cond_label[1]}, sparse={cond_label[2]}")
+    plt.axvline(0, color='k', linestyle='--', linewidth=0.8)
+    plt.xlim(-window_ms, window_ms)
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    fname = f"crosscorr_A{cond_label[0]}_D{cond_label[1]}_S{cond_label[2]}.png"
+    save_path = outdir / fname
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    print(f"💾 Saved: {save_path.resolve()}")
+
+print("=== 全条件のクロスコレログラム (Hz換算) 保存完了 ===")
